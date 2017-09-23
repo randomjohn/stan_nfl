@@ -16,6 +16,7 @@ library(tidyverse)
 library(rvest)
 library(stringr)
 library(rstan)
+library(arm)
 ```
 
 The parameters are as follows
@@ -41,7 +42,7 @@ preseas_html %>%
   filter(str_detect(rank_text,"^\\d+")) %>% 
   mutate(rank = str_extract(rank_text,"^\\d+"),
          team = str_extract(rank_text,"[A-Za-z].+$")) %>% 
-  select(-rank_text) -> preseason_ranks
+  dplyr::select(-rank_text) -> preseason_ranks
 
 preseason_ranks
 ```
@@ -110,17 +111,17 @@ library(rstan)
 rstan_options(auto_write=TRUE)
 options(mc.cores = parallel::detectCores())
 
-teams <- as_vector(preseason_ranks %>% arrange(rank) %>% select(team))
+teams <- as_vector(preseason_ranks %>% dplyr::select(team))
 nteams <- length(teams)
 prior_score <- rev(1:nteams)
 prior_score <- (prior_score-mean(prior_score)) / (2*sd(prior_score))
 
 ngames <- nrow(nfl_scores)
 
-team1 <- match(as_vector(nfl_scores %>% select(home_team)),teams)
-score1 <- as.numeric(as_vector(nfl_scores %>% select(home_score)))
-team2 <- match(as_vector(nfl_scores %>% select(visiting_team)),teams)
-score2 <- as.numeric(as_vector(nfl_scores %>% select(visiting_score)))
+team1 <- match(as_vector(nfl_scores %>% dplyr::select(home_team)),teams)
+score1 <- as.numeric(as_vector(nfl_scores %>% dplyr::select(home_score)))
+team2 <- match(as_vector(nfl_scores %>% dplyr::select(visiting_team)),teams)
+score2 <- as.numeric(as_vector(nfl_scores %>% dplyr::select(visiting_score)))
 
 df <- 7
 
@@ -128,6 +129,30 @@ data <- c("nteams","ngames","team1","score1","team2","score2","prior_score","df"
 fit <- stan("nfl_model.stan",data=data)
 
 fit
+```
+
+We graph here the posterior distribution of the quality factors. 
+
+```{r}
+sims <- rstan::extract(fit)
+
+colVars <- function(a) {n <- dim(a)[[1]]; c <- dim(a)[[2]]; return(.colMeans(((a - matrix(.colMeans(a, n, c), nrow = n, ncol = c, byrow = TRUE)) ^ 2), n, c) * n / (n - 1))}
+
+a_sims <- sims$a
+a_hat <- colMeans(a_sims)
+a_se <- sqrt(colVars(a_sims))
+coefplot (rev(a_hat), rev(a_se), CI=1, varnames=rev(teams), main="Team quality (estimate +/- 1 s.e.)\n", cex.var=.8, mar=c(0,4,5.1,2), xlim=c(-2,2))
+
+data_frame(teams=factor(rev(teams),ordered=TRUE),quality_mean=rev(a_hat),quality_se=rev(a_se),
+           preseason_rank = 32:1) -> post
+post %>% 
+  ggplot(aes(x=teams)) + 
+  scale_x_discrete(limits=levels(teams)[order(teams)]) +
+  geom_segment(aes(xend=teams,y=quality_mean-quality_se,yend=quality_mean+quality_se)) + 
+  geom_point(aes(y=quality_mean)) +
+  coord_flip() +
+  labs(x = "",y="",title=paste0("Posterior distribution of team quality after Week",this_week-1))
+
 ```
 
 
