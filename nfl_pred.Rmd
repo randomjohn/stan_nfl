@@ -1,0 +1,144 @@
+---
+title: "NFL predictions"
+output: html_notebook
+---
+
+# Purpose
+
+The purpose of this project is to predict the winners of a Week of NFL games based on pre-season rankings and scores during the regular season.
+
+The first model to be used is very simple - I use the preseason rankings as prior information, and assign an ability score based on those rankings. Then I use the point spread as data to create a posterior distribution of ability. Finally, I calculate the probability of winning based on the matchup and posterior ability scores.
+
+# Set up
+
+```{r setup}
+library(tidyverse)
+library(rvest)
+library(stringr)
+library(rstan)
+```
+
+The parameters are as follows
+
+```{r}
+this_week <- 3
+```
+
+
+# Obtaining data
+
+## Preseason rankings
+
+We try to get preseason ranking from [Yahoo](https://sports.yahoo.com/nfl-preseason-power-rankings-2017-133009081.html). It's a slightly annoying webscraping exercise - on this website the preseason ranks are listed in HTML `h2` headlines, along with other headlines. I used the nifty SelectorGadget that came with the `rvest` package to make this discovery, rather than the developer tools in Microsoft Edge, which are powerful but rather arcane.
+
+```{r}
+preseas_html <- read_html("https://sports.yahoo.com/nfl-preseason-power-rankings-2017-133009081.html")
+
+preseas_html %>% 
+  html_nodes(xpath="//h2") %>% 
+  html_text() %>%
+  data_frame(rank_text = .)  %>% 
+  filter(str_detect(rank_text,"^\\d+")) %>% 
+  mutate(rank = str_extract(rank_text,"^\\d+"),
+         team = str_extract(rank_text,"[A-Za-z].+$")) %>% 
+  select(-rank_text) -> preseason_ranks
+
+preseason_ranks
+```
+
+## Scores
+
+Now I get scores. To do this I scrape the [Pro Football Reference](https://www.pro-football-reference.com/years/2017/week_1.htm) site because they seem like they have the easiest layout to scrape and a logical URL structure. I'm also testing out my functional programming skills here. One of the most annoying ugly things about programming has been accumulating data and combining it. The `foreach` package made that more elegant, but `purrr` should make that even better.
+
+```{r}
+url_scrape <- function(week,year=2017) {
+  paste0("https://www.pro-football-reference.com/years/",year,"/week_",week,".htm")
+}
+
+
+read_nfl_score <- function(week,year=2017) {
+  week_html <- read_html(url_scrape(week,year=year))
+  week_html %>% 
+    html_nodes(".teams") %>% 
+    html_text %>% 
+    data_frame(score_text=.) %>% 
+    mutate(score_text = str_replace_all(score_text,"[\\n\\t]+",","),
+           score_text = str_replace(score_text,"\\w+ \\d{1,2}, \\d{4}","")) %>% 
+    tidyr::extract(score_text,c("visiting_team","visiting_score","home_team","home_score"),
+                   "([\\w ]*),([\\d]+)\\s*,.*,([\\w ]*),([\\d]+)\\s*,")
+}
+
+data_frame(week = 1:(this_week-1)) %>% 
+  mutate(week_scores = purrr::map(week,~read_nfl_score(.x))) %>%
+  unnest() -> nfl_scores
+
+nfl_scores
+ 
+```
+
+## Schedule
+
+We download the schedule in a similar fashion to the scores. Issue is, the tables are the same, but they use tabs and newlines which makes it a little trickier. Note this uses the same `url_scrape` function as above.
+
+```{r}
+read_nfl_schedule <- function(week,year=2017) {
+  week_html <- read_html(url_scrape(week,year=year))
+  week_html %>% 
+    html_nodes(".teams") %>% 
+    html_text %>% 
+    data_frame(score_text=.) %>% 
+    mutate(score_text = str_replace_all(score_text,"[\\n\\t]+",","),
+           score_text = str_replace(score_text,"\\w+ \\d{1,2}, \\d{4}|Sunday|Saturday|Monday|Thursday","")) %>% 
+    filter(str_detect(score_text,"Preview")) %>% 
+    tidyr::extract(score_text,c("visiting_team","home_team"),
+                   "([\\w ]*),.*,([\\w ]*),")
+}
+
+upcoming_games <- read_nfl_schedule(this_week)
+upcoming_games
+```
+
+
+# Modeling
+
+The model here is listed at [Andy Gelman's talk](https://youtu.be/T1gYvX5c2sM?t=7m14s). It is included in the `nfl_model.stan` file. The `R` code is listed [a little later in the same talk](https://youtu.be/T1gYvX5c2sM?t=8m56s), and is included below, modified to fit my problem.
+
+
+```{r}
+library(rstan)
+
+rstan_options(auto_write=TRUE)
+options(mc.cores = parallel::detectCores())
+
+teams <- as_vector(preseason_ranks %>% arrange(rank) %>% select(team))
+nteams <- length(teams)
+prior_score <- rev(1:nteams)
+prior_score <- (prior_score-mean(prior_score)) / (2*sd(prior_score))
+
+ngames <- nrow(nfl_scores)
+
+team1 <- match(as_vector(nfl_scores %>% select(home_team)),teams)
+score1 <- as.numeric(as_vector(nfl_scores %>% select(home_score)))
+team2 <- match(as_vector(nfl_scores %>% select(visiting_team)),teams)
+score2 <- as.numeric(as_vector(nfl_scores %>% select(visiting_score)))
+
+df <- 7
+
+data <- c("nteams","ngames","team1","score1","team2","score2","prior_score","df")
+fit <- stan("nfl_model.stan",data=data)
+
+fit
+```
+
+
+
+# Extensions
+
+I'm considering extending the model in the following ways:
+
+ * Home field advantage (should be easy)
+ * Injury reports (have to find the data, probably another arduous exercise, most people would complain about leaving out information about who is injured but I'll probably just use number of injured players to start)
+
+# References
+
+This was inspired by the soccer example from [Andy Gelman's Stan talk](https://www.youtube.com/watch?v=T1gYvX5c2sM&t=3310s). Code is [here](http://andrewgelman.com/2014/07/13/stan-analyzes-world-cup-data/).
