@@ -125,8 +125,14 @@ score2 <- as.numeric(as_vector(nfl_scores %>% dplyr::select(visiting_score)))
 
 df <- 7
 
-data <- c("nteams","ngames","team1","score1","team2","score2","prior_score","df")
-fit <- stan("nfl_model.stan",data=data)
+# for predictive probabilities
+newgames <- nrow(upcoming_games)
+newteam1 <- match(upcoming_games$home_team,teams)
+newteam2 <- match(upcoming_games$visiting_team,teams)
+
+
+data <- c("nteams","ngames","team1","score1","team2","score2","prior_score","df","newgames","newteam1","newteam2")
+fit <- stan("nfl_model_with_pred.stan",data=data,iter=3000,warmup=1250,control=list(adapt_delta=0.95))
 
 fit
 ```
@@ -141,18 +147,33 @@ colVars <- function(a) {n <- dim(a)[[1]]; c <- dim(a)[[2]]; return(.colMeans(((a
 a_sims <- sims$a
 a_hat <- colMeans(a_sims)
 a_se <- sqrt(colVars(a_sims))
-coefplot (rev(a_hat), rev(a_se), CI=1, varnames=rev(teams), main="Team quality (estimate +/- 1 s.e.)\n", cex.var=.8, mar=c(0,4,5.1,2), xlim=c(-2,2))
 
 data_frame(teams=factor(rev(teams),ordered=TRUE),quality_mean=rev(a_hat),quality_se=rev(a_se),
            preseason_rank = 32:1) -> post
+
 post %>% 
-  ggplot(aes(x=teams)) + 
-  scale_x_discrete(limits=levels(teams)[order(teams)]) +
+  ggplot(aes(x=reorder(teams,rev(preseason_rank)))) + 
+  scale_x_discrete() +
   geom_segment(aes(xend=teams,y=quality_mean-quality_se,yend=quality_mean+quality_se)) + 
   geom_point(aes(y=quality_mean)) +
   coord_flip() +
-  labs(x = "",y="",title=paste0("Posterior distribution of team quality after Week",this_week-1))
+  labs(x = "",y="",title=paste0("Posterior distribution of team quality after Week",this_week-1),
+       subtitle="Ordered by preseason rank")
 
+```
+
+## Predictions
+
+Do predictions in Stan using a `generated quantities` block, and bring over to R. 
+
+```{r}
+pred_chains <-  extract(fit,"new_dif")$new_dif
+pred_diffs <- colMeans(pred_chains>0)
+pred_spread <- colMeans(pred_chains)
+upcoming_games %>% 
+  bind_cols(data_frame(pred_home_win=pred_diffs,pred_spread=pred_spread)) %>% 
+  dplyr::select(home_team,visiting_team,pred_home_win,pred_spread) -> upcoming_game_win
+upcoming_game_win
 ```
 
 
