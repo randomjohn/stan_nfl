@@ -237,7 +237,9 @@ home_adv_df %>%
   summarize(n=n(),home_adv_mean = sprintf("%4.2f",mean(home_adv)),home_adv_sd=sprintf("%5.3f",sd(home_adv)))
 ```
 
-## Predictions under home field advantage
+We expect home field advantage to be positive. A team playing at home can expect to add `home_adv` points to the spread vs. the visiting team. However, at the beginning of the season there may not be enough data to get a sensible `home_adv` estimate, and it will probably stay close to 0 a few weeks into the season.
+
+## Who's gonna win under home field advantage
 
 ```{r}
 pred_chains2 <-  extract(fit2,"new_dif")$new_dif
@@ -254,6 +256,8 @@ upcoming_game_win %>%
 # Injuries
 
 This extends the model to include injuries.
+
+## Obtaining injury data
 
 First, we get injuries by week. Fox Sports seems to have the most usable data on this (i.e. easiest to scrape), so use their site. Then we use everybody listed as Doubtful or Out as a proxy for the severity of injuries to a team.
 
@@ -327,6 +331,7 @@ upcoming_games %>%
 upcoming_games_injuries
 ```
 
+## Modeling
 
 Now we're ready to fit the model in `Stan`.
 
@@ -354,14 +359,100 @@ newteam2 <- match(upcoming_games_injuries$visiting_team,teams)
 newinjury1 <- as.numeric(as_vector(upcoming_games_injuries %>% dplyr::select(home_injuries)))
 newinjury2 <- as.numeric(as_vector(upcoming_games_injuries %>% dplyr::select(visiting_injuries)))
 
+# sigmas for prior probabilities
+home_sigma <- 3
+inj_sigma <- 1
+
 
 data <- c("nteams","ngames","team1","score1","team2","score2","prior_score","df",
-          "injury1","injury2","newgames","newteam1","newteam2","newinjury1","newinjury2")
-fit3 <- stan("nfl_homefield_inj.stan",data=data,iter=3000,warmup=1250,control=list(adapt_delta=0.95))
+          "injury1","injury2","newgames","newteam1","newteam2","newinjury1","newinjury2",
+          "home_sigma","inj_sigma")
+fit3 <- stan("nfl_homefield_inj.stan",data=data,iter=5000,warmup=2000,control=list(adapt_delta=0.97))
 
 fit3
 ```
 
+## Team quality considering home field and injuries
+
+```{r}
+sims3 <- rstan::extract(fit3)
+
+a_sims3 <- sims3$a
+a_hat3 <- colMeans(a_sims3)
+a_se3 <- sqrt(colVars(a_sims3))
+
+data_frame(teams=factor(rev(teams),ordered=TRUE),quality_mean=rev(a_hat3),quality_se=rev(a_se3),
+           preseason_rank = 32:1) -> post3
+
+post3 %>% 
+  ggplot(aes(x=reorder(teams,rev(preseason_rank)))) + 
+  scale_x_discrete() +
+  geom_segment(aes(xend=teams,y=quality_mean-quality_se,yend=quality_mean+quality_se)) + 
+  geom_point(aes(y=quality_mean)) +
+  coord_flip() +
+  labs(x = "",y="",title=paste0("Posterior distribution of team quality after Week",this_week-1),
+       subtitle="Ordered by preseason rank, home field advantage and injuries included")
+
+post3 %>% 
+  ggplot(aes(x=fct_reorder(teams,quality_mean))) + 
+  scale_x_discrete() +
+  geom_segment(aes(xend=teams,y=quality_mean-quality_se,
+                   yend=quality_mean+quality_se)) + 
+  geom_point(aes(y=quality_mean)) +
+  coord_flip() +
+  labs(x = "",y="",title=paste0("Posterior distribution of team quality after Week",this_week-1),
+       subtitle="Ordered by current quality, home field advantage and injuries included")
+
+```
+
+## Distribution of home field advantage in model with injuries
+
+```{r}
+home_adv3 <- rstan::extract(fit3,"home_adv")
+
+data_frame(home_adv=home_adv3$home_adv) -> home_adv_df3
+home_adv_df3 %>% 
+  ggplot(aes(x=home_adv)) +
+  geom_density()
+
+home_adv_df3 %>% 
+  summarize(n=n(),home_adv_mean = sprintf("%4.2f",mean(home_adv)),home_adv_sd=sprintf("%5.3f",sd(home_adv)))
+```
+
+As it will take a few weeks for the model to become stable, we expect home field advantage estimates to be around 0, especially with the injury parameter added. It's possible that the model doesn't quite yet know how to assign "blame" to home field advantage vs. injuries.
+
+## Distribution of injury advantage
+
+```{r}
+inj_adv3 <- rstan::extract(fit3,"inj_adv")
+
+data_frame(inj_adv=inj_adv3$inj_adv) -> inj_adv_df3
+inj_adv_df3 %>% 
+  ggplot(aes(x=inj_adv)) +
+  geom_density()
+
+inj_adv_df3 %>% 
+  summarize(n=n(),inj_adv_mean = sprintf("%4.2f",mean(inj_adv)),inj_adv_sd=sprintf("%5.3f",sd(inj_adv))) -> inj_adv_summary
+inj_adv_summary
+
+inj_adv_mean <- mean(inj_adv_df3$inj_adv)
+```
+
+We expect injury advantage to be negative. In the model, this factor is multiplied by the difference in injured players between the home team and visiting team and added to the mean point spread of the distribution. So for every player injured on the home team more than the visiting team, we can expect the home team to have a spread of `inj_adv` fewer points (or lose by `inj_adv` more points).
+
+## Who's gonna win?
+
+```{r}
+pred_chains <-  extract(fit3,"new_dif")$new_dif
+pred_diffs <- colMeans(pred_chains>0)
+pred_spread <- colMeans(pred_chains)
+upcoming_games %>% 
+  bind_cols(data_frame(pred_home_win=pred_diffs,pred_spread=pred_spread)) %>% 
+  dplyr::select(home_team,visiting_team,pred_home_win,pred_spread) -> upcoming_game_win
+upcoming_game_win %>% 
+  mutate(pred_home_win = sprintf("%3.1f%%",pred_home_win*100),
+         pred_spread = sprintf("%5.2f",pred_spread))
+```
 
 # References
 

@@ -10,6 +10,9 @@ data {
   vector[ngames] injury2;
   real df;
   
+  int home_sigma;
+  int inj_sigma;
+  
   int newgames;
   int newteam1[newgames];
   int newteam2[newgames];
@@ -40,8 +43,8 @@ parameters {
 }
 
 model {
-  home_adv ~ student_t(3,0,1);
-  inj_adv ~ student_t(3,0,1);
+  home_adv ~ normal(0,home_sigma);
+  inj_adv ~ normal(0,inj_sigma);
   a ~ normal(b*prior_score, sigma_a);
   for (i in 1:ngames)
     sqrt_dif[i] ~ student_t(df, a[team1[i]]-a[team2[i]] + home_adv + inj_adv*inj_dif[i], sigma_y);
