@@ -14,6 +14,7 @@ The first model to be used is very simple - I use the preseason rankings as prio
 ```{r setup}
 library(tidyverse)
 library(rvest)
+library(forcats)
 library(stringr)
 library(rstan)
 library(arm)
@@ -96,7 +97,8 @@ read_nfl_schedule <- function(week,year=2017) {
 }
 
 upcoming_games <- read_nfl_schedule(this_week)
-upcoming_games
+upcoming_games %>% 
+  bind_rows(data_frame(home_team="Los Angeles Rams",visiting_team="San Francisco 49ers")) -> upcoming_games
 ```
 
 
@@ -106,8 +108,6 @@ The model here is listed at [Andy Gelman's talk](https://youtu.be/T1gYvX5c2sM?t=
 
 
 ```{r}
-library(rstan)
-
 rstan_options(auto_write=TRUE)
 options(mc.cores = parallel::detectCores())
 
@@ -173,17 +173,195 @@ pred_spread <- colMeans(pred_chains)
 upcoming_games %>% 
   bind_cols(data_frame(pred_home_win=pred_diffs,pred_spread=pred_spread)) %>% 
   dplyr::select(home_team,visiting_team,pred_home_win,pred_spread) -> upcoming_game_win
-upcoming_game_win
+upcoming_game_win %>% 
+  mutate(pred_home_win = sprintf("%3.1f%%",pred_home_win*100),
+         pred_spread = sprintf("%5.2f",pred_spread))
+```
+
+# Home field advantage
+
+I wrote an extension `nfl_model_pred_homeadv.stan` that basically adds a home field advantage, a $t_3$ distribution centered at 0 and sigma of 1, to all differences. It doesn't require further data, but it will be interesting to look at it.
+
+```{r}
+fit2 <- stan("nfl_model_pred_homeadv.stan",data=data,iter=6000,warmup=2000,control=list(adapt_delta=0.97))
+
+fit2
+```
+
+## Team quality considering home field
+
+```{r}
+sims2 <- rstan::extract(fit2)
+
+a_sims2 <- sims2$a
+a_hat2 <- colMeans(a_sims2)
+a_se2 <- sqrt(colVars(a_sims2))
+
+data_frame(teams=factor(rev(teams),ordered=TRUE),quality_mean=rev(a_hat2),quality_se=rev(a_se2),
+           preseason_rank = 32:1) -> post2
+
+post2 %>% 
+  ggplot(aes(x=reorder(teams,rev(preseason_rank)))) + 
+  scale_x_discrete() +
+  geom_segment(aes(xend=teams,y=quality_mean-quality_se,yend=quality_mean+quality_se)) + 
+  geom_point(aes(y=quality_mean)) +
+  coord_flip() +
+  labs(x = "",y="",title=paste0("Posterior distribution of team quality after Week",this_week-1),
+       subtitle="Ordered by preseason rank, home field advantage included")
+
+post2 %>% 
+  ggplot(aes(x=fct_reorder(teams,quality_mean))) + 
+  scale_x_discrete() +
+  geom_segment(aes(xend=teams,y=quality_mean-quality_se,
+                   yend=quality_mean+quality_se)) + 
+  geom_point(aes(y=quality_mean)) +
+  coord_flip() +
+  labs(x = "",y="",title=paste0("Posterior distribution of team quality after Week",this_week-1),
+       subtitle="Ordered by current quality, home field advantage included")
+
+```
+
+## What is the homefield advantage?
+
+The homefield advantage can be explored by extracting the `home_adv` parameter and investigating its density.
+
+```{r}
+home_adv <- rstan::extract(fit2,"home_adv")
+
+data_frame(home_adv=home_adv$home_adv) -> home_adv_df
+home_adv_df %>% 
+  ggplot(aes(x=home_adv)) +
+  geom_density()
+
+home_adv_df %>% 
+  summarize(n=n(),home_adv_mean = sprintf("%4.2f",mean(home_adv)),home_adv_sd=sprintf("%5.3f",sd(home_adv)))
+```
+
+## Predictions under home field advantage
+
+```{r}
+pred_chains2 <-  extract(fit2,"new_dif")$new_dif
+pred_diffs2 <- colMeans(pred_chains2>0)
+pred_spread2 <- colMeans(pred_chains2)
+upcoming_games %>% 
+  bind_cols(data_frame(pred_home_win=pred_diffs2,pred_spread=pred_spread2)) %>% 
+  dplyr::select(home_team,visiting_team,pred_home_win,pred_spread) -> upcoming_game_win
+upcoming_game_win %>% 
+  mutate(pred_home_win = sprintf("%3.1f%%",pred_home_win*100),
+         pred_spread = sprintf("%5.2f",pred_spread))
+```
+
+# Injuries
+
+This extends the model to include injuries.
+
+First, we get injuries by week. Fox Sports seems to have the most usable data on this (i.e. easiest to scrape), so use their site. Then we use everybody listed as Doubtful or Out as a proxy for the severity of injuries to a team.
+
+```{r}
+inj_url <- function(week,year=2017) {
+  #paste0("http://www.nfl.com/injuries?week=",week)
+  paste0("http://www.foxsports.com/nfl/injuries?season=",year,"&seasonType=1&week=",week)
+}
+
+injury_table <- function(week,year=2017) {
+  inj_html <- read_html(inj_url(week))
+  
+  # team names
+  inj_html %>% 
+    html_nodes(".wisbb_teamCity") %>% 
+    html_text -> team_city
+  
+  inj_html %>% 
+    html_nodes(".wisbb_teamName") %>% 
+    html_text -> team_name
+  
+  paste(team_city,team_name) -> team_full_name
+  
+  # number of injured players
+  inj_html %>% 
+    html_nodes(".wisbb_injuryTable") %>% 
+    html_table(fill=TRUE) -> inj_tables
+  
+  data_frame(team_name=team_full_name,data=inj_tables) %>% 
+    unnest() %>% 
+    rename(game_status=`Game Status`) %>% 
+    dplyr::select(-starts_with("V"))
+  
+}
+
+data_frame(week=1:this_week) %>% 
+  mutate(data = map(week,injury_table)) %>% 
+  unnest() -> injury_table_so_far
+
+injury_table_so_far %>% 
+  group_by(week,team_name) %>% 
+  summarize(injuries=sum(game_status %in% c("Doubtful","Out"))) -> injury_numbers
+
+injury_numbers
+```
+
+Now we merge injury numbers by the NFL scores we obtained earlier.
+
+```{r}
+nfl_scores %>% 
+  left_join(injury_numbers,by=c("week"="week","visiting_team"="team_name")) %>% 
+  rename(visiting_injuries=injuries) %>% 
+  left_join(injury_numbers,by=c("week"="week","home_team"="team_name")) %>% 
+  rename(home_injuries=injuries) -> nfl_scores_injuries
+nfl_scores_injuries
+```
+
+Next, we need to add the injuries to upcoming games.
+
+```{r}
+injury_numbers %>% 
+  filter(week==this_week) %>% 
+  ungroup() %>% 
+  dplyr::select(-week) -> injury_num_this_week
+
+upcoming_games %>% 
+  left_join(injury_num_this_week ,by=c("visiting_team"="team_name")) %>% 
+  rename(visiting_injuries=injuries) %>% 
+  left_join(injury_num_this_week,by=c("home_team"="team_name")) %>% 
+  rename(home_injuries=injuries) -> upcoming_games_injuries
+upcoming_games_injuries
 ```
 
 
+Now we're ready to fit the model in `Stan`.
 
-# Extensions
+```{r}
+teams <- as_vector(preseason_ranks %>% dplyr::select(team))
+nteams <- length(teams)
+prior_score <- rev(1:nteams)
+prior_score <- (prior_score-mean(prior_score)) / (2*sd(prior_score))
 
-I'm considering extending the model in the following ways:
+ngames <- nrow(nfl_scores_injuries)
 
- * Home field advantage (should be easy)
- * Injury reports (have to find the data, probably another arduous exercise, most people would complain about leaving out information about who is injured but I'll probably just use number of injured players to start)
+team1 <- match(as_vector(nfl_scores_injuries %>% dplyr::select(home_team)),teams)
+score1 <- as.numeric(as_vector(nfl_scores_injuries %>% dplyr::select(home_score)))
+injury1 <- as.numeric(as_vector(nfl_scores_injuries %>% dplyr::select(home_injuries)))
+team2 <- match(as_vector(nfl_scores_injuries %>% dplyr::select(visiting_team)),teams)
+score2 <- as.numeric(as_vector(nfl_scores_injuries %>% dplyr::select(visiting_score)))
+injury2 <- as.numeric(as_vector(nfl_scores_injuries %>% dplyr::select(visiting_injuries)))
+
+df <- 7
+
+# for predictive probabilities
+newgames <- nrow(upcoming_games_injuries)
+newteam1 <- match(upcoming_games_injuries$home_team,teams)
+newteam2 <- match(upcoming_games_injuries$visiting_team,teams)
+newinjury1 <- as.numeric(as_vector(upcoming_games_injuries %>% dplyr::select(home_injuries)))
+newinjury2 <- as.numeric(as_vector(upcoming_games_injuries %>% dplyr::select(visiting_injuries)))
+
+
+data <- c("nteams","ngames","team1","score1","team2","score2","prior_score","df",
+          "injury1","injury2","newgames","newteam1","newteam2","newinjury1","newinjury2")
+fit3 <- stan("nfl_homefield_inj.stan",data=data,iter=3000,warmup=1250,control=list(adapt_delta=0.95))
+
+fit3
+```
+
 
 # References
 
