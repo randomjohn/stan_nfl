@@ -137,6 +137,8 @@ fit <- stan("nfl_model_with_pred.stan",data=data,iter=3000,warmup=1250,control=l
 fit
 ```
 
+## Team quality
+
 We graph here the posterior distribution of the quality factors. 
 
 ```{r}
@@ -255,7 +257,7 @@ upcoming_game_win %>%
 
 # Injuries
 
-This extends the model to include injuries.
+This extends the model to include injuries in addition to home field advantage.
 
 ## Obtaining injury data
 
@@ -333,7 +335,7 @@ upcoming_games_injuries
 
 ## Modeling
 
-Now we're ready to fit the model in `Stan`.
+Now we're ready to fit the model in `Stan`. Home field advantage has a prior of normal with 0 mean and standard deviation of 3. Injury has a prior of normal with 0 mean and standard deviation of 1.
 
 ```{r}
 teams <- as_vector(preseason_ranks %>% dplyr::select(team))
@@ -405,7 +407,7 @@ post3 %>%
 
 ```
 
-## Distribution of home field advantage in model with injuries
+## What is the home field advantage in model with injuries
 
 ```{r}
 home_adv3 <- rstan::extract(fit3,"home_adv")
@@ -419,9 +421,9 @@ home_adv_df3 %>%
   summarize(n=n(),home_adv_mean = sprintf("%4.2f",mean(home_adv)),home_adv_sd=sprintf("%5.3f",sd(home_adv)))
 ```
 
-As it will take a few weeks for the model to become stable, we expect home field advantage estimates to be around 0, especially with the injury parameter added. It's possible that the model doesn't quite yet know how to assign "blame" to home field advantage vs. injuries.
+As it will take a few weeks for the model to become stable, we expect home field advantage estimates to be around 0, especially with the injury parameter added. It's possible that the model doesn't quite yet know how to assign "blame" to home field advantage vs. injuries. Eventually, we expect it to be positive.
 
-## Distribution of injury advantage
+## What is the injury advantage
 
 ```{r}
 inj_adv3 <- rstan::extract(fit3,"inj_adv")
