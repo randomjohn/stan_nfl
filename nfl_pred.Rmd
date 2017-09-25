@@ -86,6 +86,7 @@ nfl_scores
 We download the schedule in a similar fashion to the scores. Issue is, the tables are the same, but they use tabs and newlines which makes it a little trickier. Note this uses the same `url_scrape` function as above.
 
 ```{r}
+# FIXME: fix this so it can parse a partially populated score table (not just an empty one)
 read_nfl_schedule <- function(week,year=2017) {
   week_html <- read_html(url_scrape(week,year=year))
   week_html %>% 
