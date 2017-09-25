@@ -1,6 +1,8 @@
 ---
 title: "NFL predictions"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
 
 # Purpose
@@ -23,7 +25,7 @@ library(arm)
 The parameters are as follows
 
 ```{r}
-this_week <- 3
+this_week <- 4
 ```
 
 
@@ -72,7 +74,8 @@ read_nfl_score <- function(week,year=2017) {
 
 data_frame(week = 1:(this_week-1)) %>% 
   mutate(week_scores = purrr::map(week,~read_nfl_score(.x))) %>%
-  unnest() -> nfl_scores
+  unnest() %>% 
+  filter(!is.na(visiting_team))-> nfl_scores
 
 nfl_scores
  
@@ -97,14 +100,18 @@ read_nfl_schedule <- function(week,year=2017) {
 }
 
 upcoming_games <- read_nfl_schedule(this_week)
-upcoming_games %>% 
-  bind_rows(data_frame(home_team="Los Angeles Rams",visiting_team="San Francisco 49ers")) -> upcoming_games
 ```
 
 
 # Modeling
 
 The model here is listed at [Andy Gelman's talk](https://youtu.be/T1gYvX5c2sM?t=7m14s). It is included in the `nfl_model.stan` file. The `R` code is listed [a little later in the same talk](https://youtu.be/T1gYvX5c2sM?t=8m56s), and is included below, modified to fit my problem.
+
+There are a couple of features to this model that are worth discussing:
+
+ * First, the model considers (a transformation of) the point spread rather than the win/loss. This is because a lot more information is contained in the (effectively) continuous point spread than in the win/loss binary, enabling a more refined estimation of a team's power.
+ * The transformation used in the point spread modeling is a signed square root. I thought a bit about this transformation a bit, and decided to keep this holdover from Gelman's soccer example. It is a transformation that somewhat penalizes "running up the score" -- if a really good team plays a bad team, then a 42-0 score is really about the same indicator of quality of a 49-0 score, for instance. On the flip side, if a team has a very large lead going into the fourth quarter or the game outcome is evident before the clock runs out, they may elect to take their "foot off the gas" by substituting in less-used players, running the ball rather than passing, or overall play more conservatively. The losing team may also elect to play lesser-used players. While the signed square root transform does not perfectly capture this issue, it does an ok job of modeling these effects. Other transforms can be used, such as a signed log, but probably won't change much.
+ * Finally, the prior for team quality is taken from pre-season rankings, and quality is assumed to spread evenly from -1 to 1 times a factor $b$ estimated from the model. How much the preseason rank matters is controlled by the standard deviation $sigma_a$ also estimated from the model. 
 
 
 ```{r}
@@ -182,7 +189,7 @@ upcoming_game_win %>%
 
 # Home field advantage
 
-I wrote an extension `nfl_model_pred_homeadv.stan` that basically adds a home field advantage, a $t_3$ distribution centered at 0 and sigma of 1, to all differences. It doesn't require further data, but it will be interesting to look at it.
+I wrote an extension `nfl_model_pred_homeadv.stan` that basically adds a home field advantage, which has a prior $t_3$ distribution centered at 0 and sigma of 1, to all differences. It doesn't require further data, but it will be interesting to look at it.
 
 ```{r}
 fit2 <- stan("nfl_model_pred_homeadv.stan",data=data,iter=6000,warmup=2000,control=list(adapt_delta=0.97))
@@ -191,6 +198,7 @@ fit2
 ```
 
 ## Team quality considering home field
+
 
 ```{r}
 sims2 <- rstan::extract(fit2)
