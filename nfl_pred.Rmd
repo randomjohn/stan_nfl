@@ -25,7 +25,7 @@ library(arm)
 The parameters are as follows
 
 ```{r}
-this_week <- 4
+this_week <- 5
 ```
 
 
