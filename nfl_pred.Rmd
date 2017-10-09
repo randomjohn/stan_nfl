@@ -14,6 +14,7 @@ The first model to be used is very simple - I use the preseason rankings as prio
 # Set up
 
 ```{r setup}
+knitr::opts_chunk$set(message = FALSE)
 library(tidyverse)
 library(rvest)
 library(forcats)
@@ -25,7 +26,7 @@ library(arm)
 The parameters are as follows
 
 ```{r}
-this_week <- 5
+this_week <- 6
 ```
 
 
@@ -36,16 +37,22 @@ this_week <- 5
 We try to get preseason ranking from [Yahoo](https://sports.yahoo.com/nfl-preseason-power-rankings-2017-133009081.html). It's a slightly annoying webscraping exercise - on this website the preseason ranks are listed in HTML `h2` headlines, along with other headlines. I used the nifty SelectorGadget that came with the `rvest` package to make this discovery, rather than the developer tools in Microsoft Edge, which are powerful but rather arcane.
 
 ```{r}
-preseas_html <- read_html("https://sports.yahoo.com/nfl-preseason-power-rankings-2017-133009081.html")
 
-preseas_html %>% 
-  html_nodes(xpath="//h2") %>% 
-  html_text() %>%
-  data_frame(rank_text = .)  %>% 
-  filter(str_detect(rank_text,"^\\d+")) %>% 
-  mutate(rank = str_extract(rank_text,"^\\d+"),
-         team = str_extract(rank_text,"[A-Za-z].+$")) %>% 
-  dplyr::select(-rank_text) -> preseason_ranks
+if (!file.exists("preseason_ranks.RData")) {
+  preseas_html <- read_html("https://sports.yahoo.com/nfl-preseason-power-rankings-2017-133009081.html")
+  
+  preseas_html %>% 
+    html_nodes(xpath="//h2") %>% 
+    html_text() %>%
+    data_frame(rank_text = .)  %>% 
+    filter(str_detect(rank_text,"^\\d+")) %>% 
+    mutate(rank = str_extract(rank_text,"^\\d+"),
+           team = str_extract(rank_text,"[A-Za-z].+$")) %>% 
+    dplyr::select(-rank_text) -> preseason_ranks
+  save(preseason_ranks,file="preseason_ranks.RData")
+} else {
+  load("preseason_ranks.RData")
+}
 
 preseason_ranks
 ```
@@ -61,15 +68,22 @@ url_scrape <- function(week,year=2017) {
 
 
 read_nfl_score <- function(week,year=2017) {
-  week_html <- read_html(url_scrape(week,year=year))
-  week_html %>% 
-    html_nodes(".teams") %>% 
-    html_text %>% 
-    data_frame(score_text=.) %>% 
-    mutate(score_text = str_replace_all(score_text,"[\\n\\t]+",","),
-           score_text = str_replace(score_text,"\\w+ \\d{1,2}, \\d{4}","")) %>% 
-    tidyr::extract(score_text,c("visiting_team","visiting_score","home_team","home_score"),
-                   "([\\w ]*),([\\d]+)\\s*,.*,([\\w ]*),([\\d]+)\\s*,")
+  fname <- paste0("season_",year,"_week_",week,".RData")
+  if (!file.exists(fname)) {
+    week_html <- read_html(url_scrape(week,year=year))
+    week_html %>% 
+      html_nodes(".teams") %>% 
+      html_text %>% 
+      data_frame(score_text=.) %>% 
+      mutate(score_text = str_replace_all(score_text,"[\\n\\t]+",","),
+             score_text = str_replace(score_text,"\\w+ \\d{1,2}, \\d{4}","")) %>% 
+      tidyr::extract(score_text,c("visiting_team","visiting_score","home_team","home_score"),
+                     "([\\w ]*),([\\d]+)\\s*,.*,([\\w ]*),([\\d]+)\\s*,") -> this_score
+    save(this_score,file=fname)
+  } else {
+    load(fname)
+  }
+  this_score
 }
 
 data_frame(week = 1:(this_week-1)) %>% 
@@ -122,7 +136,7 @@ options(mc.cores = parallel::detectCores())
 teams <- as_vector(preseason_ranks %>% dplyr::select(team))
 nteams <- length(teams)
 prior_score <- rev(1:nteams)
-prior_score <- (prior_score-mean(prior_score)) / (2*sd(prior_score))
+prior_score <- (prior_score-mean(prior_score)) / (2*sd(prior_score)) 
 
 ngames <- nrow(nfl_scores)
 
@@ -368,7 +382,9 @@ newgames <- nrow(upcoming_games_injuries)
 newteam1 <- match(upcoming_games_injuries$home_team,teams)
 newteam2 <- match(upcoming_games_injuries$visiting_team,teams)
 newinjury1 <- as.numeric(as_vector(upcoming_games_injuries %>% dplyr::select(home_injuries)))
+newinjury1 <- ifelse(is.na(newinjury1),0,newinjury1)
 newinjury2 <- as.numeric(as_vector(upcoming_games_injuries %>% dplyr::select(visiting_injuries)))
+newinjury2 <- ifelse(is.na(newinjury2),0,newinjury2)
 
 # sigmas for prior probabilities
 home_sigma <- 3
