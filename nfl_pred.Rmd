@@ -21,6 +21,7 @@ library(forcats)
 library(stringr)
 library(rstan)
 library(arm)
+library(ggridges)
 ```
 
 The parameters are as follows
@@ -115,6 +116,7 @@ read_nfl_schedule <- function(week,year=2017) {
 }
 
 upcoming_games <- read_nfl_schedule(this_week)
+upcoming_games
 ```
 
 
@@ -241,7 +243,7 @@ post2 %>%
                    yend=quality_mean+quality_se)) + 
   geom_point(aes(y=quality_mean)) +
   coord_flip() +
-  labs(x = "",y="",title=paste0("Posterior distribution of team quality after Week",this_week-1),
+  labs(x = "",y="",title=paste0("Posterior distribution of team quality after Week ",this_week-1),
        subtitle="Ordered by current quality, home field advantage included")
 
 ```
@@ -427,7 +429,7 @@ post3 %>%
                    yend=quality_mean+quality_se)) + 
   geom_point(aes(y=quality_mean)) +
   coord_flip() +
-  labs(x = "",y="",title=paste0("Posterior distribution of team quality after Week",this_week-1),
+  labs(x = "",y="",title=paste0("Posterior distribution of team quality after Week ",this_week-1),
        subtitle="Ordered by current quality, home field advantage and injuries included")
 
 ```
@@ -473,13 +475,85 @@ We expect injury advantage to be negative. In the model, this factor is multipli
 pred_chains <-  extract(fit3,"new_dif")$new_dif
 pred_diffs <- colMeans(pred_chains>0)
 pred_spread <- colMeans(pred_chains)
-upcoming_games %>% 
-  bind_cols(data_frame(pred_home_win=pred_diffs,pred_spread=pred_spread)) %>% 
-  dplyr::select(home_team,visiting_team,pred_home_win,pred_spread) -> upcoming_game_win
+pred_se <- sqrt(colVars(pred_chains))
+
+upcoming_game_win <- upcoming_games %>% 
+  bind_cols(data_frame(pred_home_win=pred_diffs,pred_spread=pred_spread,pred_se=pred_se)) %>% 
+  dplyr::select(home_team,visiting_team,pred_home_win,pred_spread,pred_se)
+
 upcoming_game_win %>% 
   mutate(pred_home_win = sprintf("%3.1f%%",pred_home_win*100),
-         pred_spread = sprintf("%5.2f",pred_spread))
+         pred_spread = sprintf("%5.2f",pred_spread),
+         pred_se=sprintf("%6.3f",pred_se))
+
+upcoming_game_win %>% 
+  group_by(visiting_team) %>% 
+  mutate(game = paste(rev(str_split_fixed(visiting_team," ",Inf))[1],
+                      "@",
+                      rev(str_split_fixed(home_team," ",Inf))[1])) %>% 
+  ungroup() %>% 
+  dplyr::select(game,pred_spread,pred_se) %>% 
+  ggplot(aes(x=fct_reorder(game,pred_spread))) +
+  geom_pointrange(aes(y=pred_spread,
+                      ymin=pred_spread - pred_se,
+                      ymax=pred_spread + pred_se)) +
+  geom_abline(intercept=0,slope=0,linetype=2,color="gray50") +
+  scale_y_continuous(breaks = c(-21,-14,-10,-7,-3,0,3,7,10,14,21)) +
+  coord_flip() +
+  xlab("") + ylab("") +
+  ggtitle(paste("Predicted point spreads in Week",this_week),subtitle="Point range indicates 1 standard deviation;\nSpread is predicted home team - visiting team score")
 ```
+
+And now I try creating a joy plot of distributions of point spread. Most people use the `ggjoy` package, but as of 10/9/17 I found it had been superseded by the `ggridges` package.
+
+```{r}
+upcoming_games %>% 
+  group_by(visiting_team) %>% 
+  transmute(game = paste(rev(str_split_fixed(visiting_team," ",Inf))[1],
+                         "@",
+                         rev(str_split_fixed(home_team," ",Inf))[1])) %>% 
+  ungroup() %>% 
+  dplyr::select(game) -> upcoming_games_name
+
+upcoming_games_name %>% 
+  bind_cols(as_data_frame(t(pred_chains))) %>% 
+  group_by(game) %>% 
+  gather(point,spread,2:ncol(.)) -> upcoming_spreads
+
+upcoming_spreads %>% 
+  ggplot(aes(x=spread,y=game)) +
+  geom_density_ridges(scale=0.95) +
+  ylab("") + xlab("Point spread") +
+  xlim(-10,10)
+
+upcoming_spreads %>% 
+  group_by(game) %>% 
+  nest() %>% 
+  mutate(quantiles = map(data,~data_frame(quantile=c("Q1","Median","Q3","Q10","Q90","Mean"),value=c(quantile(.x$spread,probs=c(0.25,0.5,0.75,0.1,0.9)),mean(.x$spread))))) %>% 
+  unnest(quantiles) %>% 
+  spread(key=quantile,value=value) -> upcoming_quantiles
+
+upcoming_quantiles %>% 
+    left_join(upcoming_game_win %>% 
+    group_by(visiting_team) %>% 
+    mutate(game = paste(rev(str_split_fixed(visiting_team," ",Inf))[1],
+                        "@",
+                        rev(str_split_fixed(home_team," ",Inf))[1])) %>% 
+    ungroup() %>% 
+    dplyr::select(game,pred_home_win),by="game") %>% 
+    mutate(game = sprintf("%s (%4.1f%%)",game,pred_home_win*100)) %>% 
+    ggplot(aes(x=fct_reorder(game,Median))) +
+    geom_abline(slope=0,intercept=0,linetype=2,color="gray50") +
+    geom_pointrange(aes(y=Median,ymin=Q10,ymax=Q90),linetype=2) +
+    geom_pointrange(aes(y=Median,ymin=Q1,ymax=Q3),width=4) +
+    geom_point(aes(y=Mean),shape=3) +
+    scale_y_continuous(breaks = c(-35,-28,-21,-14,-10,-7,-3,0,3,7,10,14,21,28,35)) +
+    ylab("Point spread (10 %ile, Q1, Median, Q3, 90 %ile) with mean at hash mark") + xlab("") +
+    coord_flip()
+
+
+```
+
 
 # References
 
